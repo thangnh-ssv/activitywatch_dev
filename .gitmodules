@@ -1,21 +1,21 @@
 [submodule "aw-core"]
 	path = aw-core
-	url = https://github.com/ActivityWatch/aw-core.git
+	url = https://github.com/thangnh-ssv/aw-core_dev.git
 [submodule "aw-client"]
 	path = aw-client
-	url = https://github.com/ActivityWatch/aw-client.git
+	url = https://github.com/thangnh-ssv/aw-client_dev.git
 [submodule "aw-server"]
 	path = aw-server
-	url = https://github.com/ActivityWatch/aw-server.git
+	url = https://github.com/thangnh-ssv/aw-server_dev.git
 [submodule "aw-watcher-afk"]
 	path = aw-watcher-afk
 	url = https://github.com/ActivityWatch/aw-watcher-afk.git
 [submodule "aw-qt"]
 	path = aw-qt
-	url = https://github.com/ActivityWatch/aw-qt.git
+	url = https://github.com/thangnh-ssv/aw-qt_dev.git
 [submodule "aw-watcher-window"]
 	path = aw-watcher-window
-	url = https://github.com/ActivityWatch/aw-watcher-window.git
+	url = https://github.com/thangnh-ssv/aw-watcher-window_dev.git
 [submodule "aw-server-rust"]
 	path = aw-server-rust
 	url = https://github.com/ActivityWatch/aw-server-rust.git
