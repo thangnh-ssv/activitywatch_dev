@@ -10,6 +10,10 @@ from pathlib import Path
 import aw_core
 import flask_restx
 
+# PyInstaller injects SPECPATH (directory containing the spec file).
+# Do not rely on __file__ (not present in spec exec context).
+BASE_DIR = Path(SPECPATH)
+
 
 def build_analysis(name, location, binaries=[], datas=[], hiddenimports=[]):
     name_py = name.replace("-", "_")
@@ -36,8 +40,13 @@ def build_analysis(name, location, binaries=[], datas=[], hiddenimports=[]):
     )
 
 
-def build_collect(analysis, name, console=True):
-    """Used to build the COLLECT statements for each module"""
+def build_collect(analysis, name, console=True, upx=True):
+    """Used to build the COLLECT statements for each module.
+
+    On Windows, UPX-compressed ``cryptography`` Rust extension (``_rust.pyd``) often fails at
+    runtime with: DLL load failed ... The specified procedure could not be found.
+    Pass ``upx=False`` for bundles that ship ``cryptography`` (e.g. aw-server + aw_client ILS).
+    """
     pyz = PYZ(analysis.pure, analysis.zipped_data)
     exe = EXE(
         pyz,
@@ -46,7 +55,7 @@ def build_collect(analysis, name, console=True):
         name=name,
         debug=False,
         strip=False,
-        upx=True,
+        upx=upx,
         console=console,
         contents_directory=".",
         entitlements_file=entitlements_file,
@@ -58,22 +67,23 @@ def build_collect(analysis, name, console=True):
         analysis.zipfiles,
         analysis.datas,
         strip=False,
-        upx=True,
+        upx=upx,
         name=name,
     )
 
 
-# Get the current release version
-current_release = subprocess.run(
-    shlex.split("git describe --tags --abbrev=0"),
-    stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT,
-    encoding="utf8",
-).stdout.strip()
-print("bundling activitywatch version " + current_release)
+# App version (prefer explicit env var set by build script).
+# Avoid calling git here (mono-repo builds may not have git metadata and can leak "fatal:" into Info.plist).
+app_version = os.environ.get("ILS_APP_VERSION", "").strip()
+if not app_version:
+    try:
+        app_version = (BASE_DIR / "ILS_VERSION").read_text(encoding="utf8").strip()
+    except Exception:
+        app_version = "0.0.0"
+print("bundling InsightLoggerSystem version " + app_version)
 
 # Get entitlements and codesign identity
-entitlements_file = Path(".") / "scripts" / "package" / "entitlements.plist"
+entitlements_file = BASE_DIR / "scripts" / "package" / "entitlements.plist"
 codesign_identity = os.environ.get("APPLE_PERSONALID", "").strip()
 if not codesign_identity:
     print("Environment variable APPLE_PERSONALID not set. Releases won't be signed.")
@@ -81,34 +91,48 @@ if not codesign_identity:
 aw_core_path = Path(os.path.dirname(aw_core.__file__))
 restx_path = Path(os.path.dirname(flask_restx.__file__))
 
-aws_location = Path("aw-server")
-aw_server_rust_location = Path("aw-server-rust")
-aw_server_rust_bin = aw_server_rust_location / "target/package/aw-server-rust"
-aw_sync_bin = aw_server_rust_location / "target/package/aw-sync"
-aw_qt_location = Path("aw-qt")
-awa_location = Path("aw-watcher-afk")
-aww_location = Path("aw-watcher-window")
-awi_location = Path("aw-watcher-input")
-aw_notify_location = Path("aw-notify")
+aws_location = BASE_DIR / "aw-server"
+aw_qt_location = BASE_DIR / "aw-qt"
+aww_location = BASE_DIR / "aw-watcher-window"
 
 if platform.system() == "Darwin":
     icon = aw_qt_location / "media/logo/logo.icns"
 else:
     icon = aw_qt_location / "media/logo/logo.ico"
 
-skip_rust = False
-if not aw_server_rust_bin.exists():
-    skip_rust = True
-    print("Skipping Rust build because aw-server-rust binary not found.")
+# Auto-update companion (macOS only at the moment). The Windows ils-updater.exe
+# is produced by a separate PyInstaller step in build-window.sh and bundled by
+# the NSIS installer, not by this spec.
+updater_datas = []
+updater_script = BASE_DIR / "scripts" / "updater" / "ils-updater.sh"
+if platform.system() == "Darwin" and updater_script.exists():
+    updater_datas.append((str(updater_script), "."))
 
+# Bundle the ILS_VERSION file so the About dialog and the auto-update check
+# resolve the running app's version at runtime.
+ils_version_file = BASE_DIR / "ILS_VERSION"
+version_datas = []
+if ils_version_file.exists():
+    version_datas.append((str(ils_version_file), "."))
 
 aw_qt_a = build_analysis(
     "aw-qt",
     aw_qt_location,
-    binaries=[(aw_server_rust_bin, "."), (aw_sync_bin, ".")] if not skip_rust else [],
+    binaries=[],
     datas=[
         (aw_qt_location / "resources/aw-qt.desktop", "aw_qt/resources"),
         (aw_qt_location / "media", "aw_qt/media"),
+        *updater_datas,
+        *version_datas,
+    ],
+    # PyInstaller can't reliably detect these runtime imports.
+    hiddenimports=[
+        "aw_qt.trayicon",
+        "aw_qt.macos_launch_agent",
+        "aw_qt.update_manager",
+        "aw_qt.version_info",
+        "aw_core.update_shutdown",
+        "aw_core.win_process",
     ],
 )
 aw_server_a = build_analysis(
@@ -116,38 +140,24 @@ aw_server_a = build_analysis(
     aws_location,
     datas=[
         (aws_location / "aw_server/static", "aw_server/static"),
+        # Bundled runtime env file (generated by build-macos.sh)
+        (BASE_DIR / "ils.env", "aw_server"),
+        # Ensure aw-client token store is available in packaged app
+        (BASE_DIR / "aw-client" / "aw_client", "aw_client"),
         (restx_path / "templates", "flask_restx/templates"),
         (restx_path / "static", "flask_restx/static"),
         (aw_core_path / "schemas", "aw_core/schemas"),
+        # ILS_VERSION lets the auto-update cron know what version we are
+        # running so it can ask the backend whether there is a newer one.
+        *version_datas,
     ],
-)
-aw_watcher_afk_a = build_analysis(
-    "aw_watcher_afk",
-    awa_location,
     hiddenimports=[
-        "Xlib.keysymdef.miscellany",
-        "Xlib.keysymdef.latin1",
-        "Xlib.keysymdef.latin2",
-        "Xlib.keysymdef.latin3",
-        "Xlib.keysymdef.latin4",
-        "Xlib.keysymdef.greek",
-        "Xlib.support.unix_connect",
-        "Xlib.ext.shape",
-        "Xlib.ext.xinerama",
-        "Xlib.ext.composite",
-        "Xlib.ext.randr",
-        "Xlib.ext.xfixes",
-        "Xlib.ext.security",
-        "Xlib.ext.xinput",
-        "pynput.keyboard._xorg",
-        "pynput.mouse._xorg",
-        "pynput.keyboard._win32",
-        "pynput.mouse._win32",
-        "pynput.keyboard._darwin",
-        "pynput.mouse._darwin",
+        # Imported dynamically at runtime
+        "aw_client",
+        "aw_client.ils_token_store",
+        "aw_core.retention",
     ],
 )
-aw_watcher_input_a = build_analysis("aw_watcher_input", awi_location)
 aw_watcher_window_a = build_analysis(
     "aw_watcher_window",
     aww_location,
@@ -165,18 +175,6 @@ aw_watcher_window_a = build_analysis(
         (aww_location / "aw_watcher_window/printAppStatus.jxa", "aw_watcher_window")
     ],
 )
-# Check if aw-notify is a Python package
-_notify_candidates = [
-    aw_notify_location / "aw_notify/__main__.py",
-    aw_notify_location / "src/aw_notify/__main__.py",
-]
-skip_aw_notify = not any(p.exists() for p in _notify_candidates)
-if skip_aw_notify:
-    print("Skipping aw-notify Python packaging (Rust-based implementation detected)")
-
-aw_notify_a = None if skip_aw_notify else build_analysis(
-    "aw_notify", aw_notify_location, hiddenimports=["desktop_notifier.resources"]
-)
 
 # https://pythonhosted.org/PyInstaller/spec-files.html#multipackage-bundles
 # MERGE takes a bit weird arguments, it wants tuples which consists of
@@ -184,24 +182,16 @@ aw_notify_a = None if skip_aw_notify else build_analysis(
 merge_args = [
     (aw_server_a, "aw-server", "aw-server"),
     (aw_qt_a, "aw-qt", "aw-qt"),
-    (aw_watcher_afk_a, "aw-watcher-afk", "aw-watcher-afk"),
     (aw_watcher_window_a, "aw-watcher-window", "aw-watcher-window"),
-    (aw_watcher_input_a, "aw-watcher-input", "aw-watcher-input"),
 ]
-if aw_notify_a is not None:
-    merge_args.append((aw_notify_a, "aw-notify", "aw-notify"))
 
 MERGE(*merge_args)
 
 
-# aw-server
 aws_coll = build_collect(aw_server_a, "aw-server")
 
 # aw-watcher-window
 aww_coll = build_collect(aw_watcher_window_a, "aw-watcher-window")
-
-# aw-watcher-afk
-awa_coll = build_collect(aw_watcher_afk_a, "aw-watcher-afk")
 
 # aw-qt
 awq_coll = build_collect(
@@ -210,37 +200,28 @@ awq_coll = build_collect(
     console=False if platform.system() == "Windows" else True,
 )
 
-# aw-watcher-input
-awi_coll = build_collect(aw_watcher_input_a, "aw-watcher-input")
-
-# aw-notify (only if Python package exists)
-aw_notify_coll = build_collect(aw_notify_a, "aw-notify") if aw_notify_a is not None else None
 
 if platform.system() == "Darwin":
     bundle_args = [
         awq_coll,
         aws_coll,
         aww_coll,
-        awa_coll,
-        awi_coll,
     ]
-    if aw_notify_coll is not None:
-        bundle_args.append(aw_notify_coll)
     
     app = BUNDLE(
         *bundle_args,
-        name="ActivityWatch.app",
+        name="InsightLoggerSystem.app",
         icon=icon,
-        bundle_identifier="net.activitywatch.ActivityWatch",
-        version=current_release.lstrip("v"),
+        bundle_identifier="net.ils.InsightLoggerSystem",
+        version=app_version,
         info_plist={
             "NSPrincipalClass": "NSApplication",
+            "CFBundleName": "InsightLoggerSystem",
+            "CFBundleDisplayName": "InsightLoggerSystem",
             "CFBundleExecutable": "MacOS/aw-qt",
             "CFBundleIconFile": "logo.icns",
             "NSAppleEventsUsageDescription": "Please grant access to use Apple Events",
-            # This could be set to a more specific version string (including the commit id, for example)
-            "CFBundleVersion": current_release.lstrip("v"),
-            # Replaced by the 'version' kwarg above
-            # "CFBundleShortVersionString": current_release.lstrip('v'),
+            "CFBundleVersion": app_version,
+            "CFBundleShortVersionString": app_version,
         },
     )

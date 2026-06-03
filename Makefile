@@ -1,6 +1,6 @@
-# =====================================
-# Makefile for the ActivityWatch bundle
-# =====================================
+# =============================================
+# Makefile for the InsightLoggerSystem bundle
+# =============================================
 #
 # [GUIDE] How to install from source:
 #  - https://activitywatch.readthedocs.io/en/latest/installing-from-source.html
@@ -13,23 +13,11 @@ SHELL := /usr/bin/env bash
 
 OS := $(shell uname -s)
 
-ifeq ($(TAURI_BUILD),true)
-	SUBMODULES := aw-core aw-client aw-server aw-server-rust aw-watcher-afk aw-watcher-window aw-tauri
-	# Include awatcher on Linux (Wayland-compatible window watcher)
-	ifeq ($(OS),Linux)
-		SUBMODULES := $(SUBMODULES) awatcher
-	endif
-else
-	SUBMODULES := aw-core aw-client aw-qt aw-server aw-server-rust aw-watcher-afk aw-watcher-window
-endif
+SUBMODULES := aw-core aw-client aw-qt aw-server aw-watcher-window
 
-# Exclude aw-server-rust if SKIP_SERVER_RUST is true
-ifeq ($(SKIP_SERVER_RUST),true)
-	SUBMODULES := $(filter-out aw-server-rust,$(SUBMODULES))
-endif
 # Include extras if AW_EXTRAS is true
 ifeq ($(AW_EXTRAS),true)
-	SUBMODULES := $(SUBMODULES) aw-notify aw-watcher-input
+	SUBMODULES := $(SUBMODULES)
 endif
 
 # A function that checks if a target exists in a Makefile
@@ -38,17 +26,16 @@ define has_target
 $(shell make -q -C $1 $2 >/dev/null 2>&1; if [ $$? -eq 0 -o $$? -eq 1 ]; then echo $1; fi)
 endef
 
-# Submodules with test/package/lint/typecheck targets
+# Submodules with test/lint/typecheck targets (auto-detected)
 TESTABLES := $(foreach dir,$(SUBMODULES),$(call has_target,$(dir),test))
-PACKAGEABLES := $(foreach dir,$(SUBMODULES),$(call has_target,$(dir),package))
 LINTABLES := $(foreach dir,$(SUBMODULES),$(call has_target,$(dir),lint))
 TYPECHECKABLES := $(foreach dir,$(SUBMODULES),$(call has_target,$(dir),typecheck))
 
-# When building with Tauri, aw-server-rust is built as aw-sync only (not full server),
-# so exclude it from the standard package target
-ifeq ($(TAURI_BUILD),true)
-	PACKAGEABLES := $(filter-out aw-server-rust aw-server, $(PACKAGEABLES))
-endif
+# Packageable apps for distribution.
+# We keep this explicit because `make -q` probes can return non-0 for complex targets
+# (e.g. aw-server `package` depends on bump-version / git describe), which would
+# incorrectly exclude it from the bundle.
+PACKAGEABLES := aw-qt aw-server aw-watcher-window
 
 # Build mode: release vs debug
 ifeq ($(RELEASE), false)
@@ -63,23 +50,19 @@ endif
 # What it does:
 #  - Installs all the Python modules
 #  - Builds the web UI and bundles it with aw-server
-build: aw-core/.git
+build:
 #	needed due to https://github.com/pypa/setuptools/issues/1963
 #	would ordinarily be specified in pyproject.toml, but is not respected due to https://github.com/pypa/setuptools/issues/1963
-	pip install 'setuptools>49.1.1'
+	python -m pip install 'setuptools>49.1.1'
 	for module in $(SUBMODULES); do \
 		echo "Building $$module"; \
-		if [ "$$module" = "aw-server-rust" ] && [ "$(TAURI_BUILD)" = "true" ]; then \
-			make --directory=$$module aw-sync SKIP_WEBUI=$(SKIP_WEBUI) || { echo "Error in $$module aw-sync"; exit 2; }; \
-		else \
-			make --directory=$$module build SKIP_WEBUI=$(SKIP_WEBUI) || { echo "Error in $$module build"; exit 2; }; \
-		fi; \
+		make --directory=$$module build SKIP_WEBUI=$(SKIP_WEBUI) || { echo "Error in $$module build"; exit 2; }; \
 	done
 #   The below is needed due to: https://github.com/ActivityWatch/activitywatch/issues/173
 	make --directory=aw-client build
 	make --directory=aw-core build
 #	Needed to ensure that the server has the correct version set
-	python -c "import aw_server; print(aw_server.__version__)"
+	(cd aw-server && poetry run python -c "import aw_server; print(aw_server.__version__)")
 
 
 # Install
@@ -87,14 +70,11 @@ build: aw-core/.git
 #
 # Installs things like desktop/menu shortcuts.
 # Might in the future configure autostart on the system.
-ifneq ($(TAURI_BUILD),true)
 install:
 	make --directory=aw-qt install
 # Installation is already happening in the `make build` step currently.
 # We might want to change this.
 # We should also add some option to install as user (pip3 install --user)
-endif
-
 # Update
 # ------
 #
@@ -147,13 +127,9 @@ test-integration:
 	@pytest ./scripts/tests/integration_tests.py ./aw-server/tests/ -v
 
 %/.git:
-	git submodule update --init --recursive
+	@echo "Submodules disabled (self-contained mono-repo)."
 
-ifeq ($(TAURI_BUILD),true)
-	ICON := "aw-tauri/src-tauri/icons/icon.png"
-else
-	ICON := "aw-qt/media/logo/logo.png"
-endif
+ICON := "aw-qt/media/logo/logo.png"
 
 aw-qt/media/logo/logo.icns:
 	mkdir -p build/MyIcon.iconset
@@ -171,17 +147,24 @@ aw-qt/media/logo/logo.icns:
 	rm -R build/MyIcon.iconset
 	mv build/MyIcon.icns aw-qt/media/logo/logo.icns
 
-dist/ActivityWatch.app: aw-qt/media/logo/logo.icns
-ifeq ($(TAURI_BUILD),true)
-	scripts/package/build_app_tauri.sh
-else
-	pyinstaller --clean --noconfirm aw.spec
-endif
+dist/InsightLoggerSystem.app: aw-qt/media/logo/logo.icns
+	# Build the macOS app bundle using the aw-qt Poetry env (has PyInstaller).
+	# We also install flask-restx into that env so aw.spec can import it.
+	(cd aw-qt && poetry install --with pyqt)
+	# Ensure local aw-client is importable for aw-server proxy/token store.
+	(cd aw-qt && poetry run python -m pip install -q -e ../aw-client)
+	# Ensure aw-server deps used by aw.spec exist in this env too
+	(cd aw-qt && poetry run python -m pip install -q -U \
+		"flask<3" "werkzeug<3" \
+		flask-restx flask-cors requests charset_normalizer persist-queue)
+	(cd aw-qt && poetry run pyinstaller --clean --noconfirm --distpath ../dist --workpath ../build ../aw.spec)
+	mkdir -p dist/InsightLoggerSystem.app/Contents/Resources
+	cp scripts/package/macos/net.ils.ILS.plist dist/InsightLoggerSystem.app/Contents/Resources/
 
-dist/ActivityWatch.dmg: dist/ActivityWatch.app
+dist/InsightLoggerSystem.dmg: dist/InsightLoggerSystem.app
 	# NOTE: This does not codesign the dmg, that is done in the CI config
-	pip install dmgbuild
-	dmgbuild -s scripts/package/dmgbuild-settings.py -D app=dist/ActivityWatch.app "ActivityWatch" dist/ActivityWatch.dmg
+	python3 -m pip install dmgbuild
+	dmgbuild -s scripts/package/dmgbuild-settings.py -D app=dist/InsightLoggerSystem.app "InsightLoggerSystem" dist/InsightLoggerSystem.dmg
 
 dist/notarize:
 	./scripts/notarize.sh
@@ -190,19 +173,38 @@ package:
 	rm -rf dist
 	mkdir -p dist/activitywatch
 	for dir in $(PACKAGEABLES); do \
-		make --directory=$$dir package; \
-		cp -r $$dir/dist/$$dir dist/activitywatch; \
+		echo "==> Packaging $$dir"; \
+		make --directory=$$dir package || { echo "ERROR: Failed to package $$dir"; exit 1; }; \
+		if [ -d "$$dir/dist/$$dir" ]; then \
+			echo "    Copying $$dir/dist/$$dir to dist/activitywatch"; \
+			cp -r "$$dir/dist/$$dir" dist/activitywatch/ || { echo "ERROR: Failed to copy $$dir"; exit 1; }; \
+		else \
+			echo "ERROR: Expected $$dir/dist/$$dir not found"; \
+			exit 1; \
+		fi; \
 	done
-ifeq ($(TAURI_BUILD),true)
-# Copy aw-sync binary for Tauri builds
-	mkdir -p dist/activitywatch/aw-server-rust
-	cp aw-server-rust/target/$(targetdir)/aw-sync dist/activitywatch/aw-server-rust/aw-sync
-else
-# Move aw-qt to the root of the dist folder
-	mv dist/activitywatch/aw-qt aw-qt-tmp
-	mv aw-qt-tmp/* dist/activitywatch
-	rmdir aw-qt-tmp
-endif
+# Move aw-qt files to the root of the dist folder (use cp+rm instead of mv to avoid permission issues)
+	if [ -d "dist/activitywatch/aw-qt" ]; then \
+		cp -r "dist/activitywatch/aw-qt/"* "dist/activitywatch/" || { echo "ERROR: Failed to copy aw-qt files"; exit 1; }; \
+		rm -rf "dist/activitywatch/aw-qt"; \
+	fi
+# Copy version file for installer
+	if [ -f "ILS_VERSION" ]; then \
+		cp "ILS_VERSION" "dist/activitywatch/" || { echo "ERROR: Failed to copy ILS_VERSION"; exit 1; }; \
+		echo "Copied ILS_VERSION to dist/activitywatch/"; \
+	fi
+# Windows: create lightweight wrappers so aw-qt can discover bundled modules.
+# PyInstaller outputs each module into its own directory (dist/<module>/<module>.exe).
+# aw-qt only discovers executables in its own directory, so we provide .cmd shims
+# that invoke the real executable inside the module directory.
+	@uname_output=$$(uname 2>/dev/null || echo ""); \
+	if echo "$$uname_output" | grep -qE '^MINGW|^MSYS'; then \
+		for m in aw-server aw-watcher-window; do \
+			if [ -f "dist/activitywatch/$$m/$$m.exe" ]; then \
+				printf '%s\r\n' "@echo off" "setlocal" "\"%~dp0$${m}/$${m}.exe\" %*" > "dist/activitywatch/$$m.cmd"; \
+			fi; \
+		done; \
+	fi
 # Remove problem-causing binaries
 	rm -f dist/activitywatch/libdrm.so.2       # see: https://github.com/ActivityWatch/activitywatch/issues/161
 	rm -f dist/activitywatch/libharfbuzz.so.0  # see: https://github.com/ActivityWatch/activitywatch/issues/660#issuecomment-959889230
@@ -213,8 +215,9 @@ endif
 	rm -f dist/activitywatch/libfreetype.so.6
 # Remove unnecessary files
 	rm -rf dist/activitywatch/pytz
-# Builds zips and setups
-	bash scripts/package/package-all.sh
+# Note: package-all.sh is NOT called here anymore.
+# It should be called from build-window.sh AFTER ils-updater.exe is built.
+# On non-Windows platforms, you'll need to call it manually or from a platform-specific build script.
 
 clean:
 	rm -rf build dist
@@ -226,6 +229,5 @@ clean_all: clean
 	done
 
 clean-auto:
-	rm -rIv **/aw-server-rust/target
 	rm -rIv **/aw-android/mobile/build
 	rm -rIfv **/node_modules

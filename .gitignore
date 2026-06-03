@@ -20,3 +20,7 @@ __pycache__
 # Misc
 .*cache
 .DS_Store
+.env.local.signing
+xcode-cloudsign-spike/DerivedData/
+xcode-cloudsign-spike/build/
+xcode-cloudsign-spike/source/
