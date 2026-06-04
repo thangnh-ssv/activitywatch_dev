@@ -188,14 +188,12 @@ graph TD;
   aw-server[<a href='https://github.com/ActivityWatch/aw-server'>aw-server</a>];
   aw-webui[<a href='https://github.com/ActivityWatch/aw-webui'>aw-webui</a>];
   aw-watcher-window[<a href='https://github.com/ActivityWatch/aw-watcher-window'>aw-watcher-window</a>];
-  aw-watcher-afk[<a href='https://github.com/ActivityWatch/aw-watcher-afk'>aw-watcher-afk</a>];
   aw-watcher-web[<a href='https://github.com/ActivityWatch/aw-watcher-web'>aw-watcher-web</a>];
   aw-sync[<a href='https://github.com/ActivityWatch/aw-server-rust/tree/master/aw-sync'>aw-sync</a>];
 
   aw-qt -- Manages --> aw-server;
   aw-qt -- Manages --> aw-notify -- Queries --> aw-server;
   aw-qt -- Manages --> aw-watcher-window -- Watches --> S1[Active window] -- Heartbeats --> aw-server;
-  aw-qt -- Manages --> aw-watcher-afk -- Watches --> S2[AFK status] -- Heartbeats --> aw-server;
   Browser -- Manages --> aw-watcher-web -- Watches --> S3[Active tab] -- Heartbeats --> aw-server;
   SF -- Dropbox/Syncthing/etc --> SF;
   aw-server <-- Push/Pull --> aw-sync <-- Read/Write --> SF[Sync folder];
@@ -252,7 +250,6 @@ The frontend (`aw-webui`) includes:
 
 ActivityWatch comes pre-installed with two watchers:
 
- - `aw-watcher-afk` tracks the user active/inactive state from keyboard and mouse input
  - `aw-watcher-window` tracks the currently active application and its window title.
 
 There are lots of other watchers for ActivityWatch which can track more types of activity. Like `aw-watcher-web` which tracks time spent on websites, multiple editor watchers which track spent time coding, and many more! A full list of watchers can be found in [the documentation](https://docs.activitywatch.net/en/latest/watchers.html).

@@ -10,7 +10,6 @@ python = "^3.8"
 # Installing them from here won't work
 #aw-core = {path = "aw-core"}
 #aw-client = {path = "aw-client"}
-#aw-watcher-afk = {path = "aw-watcher-afk"}
 #aw-watcher-window = {path = "aw-watcher-window"}
 #aw-server = {path = "aw-server"}
 #aw-qt = {path = "aw-qt"}
